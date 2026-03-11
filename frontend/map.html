@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<title>Smart Navigation</title>
+
+<link rel="stylesheet"
+href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<style>
+
+body{
+font-family:Arial;
+}
+
+#map{
+height:600px;
+margin-top:10px;
+}
+
+button{
+padding:10px;
+font-size:16px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h2>Smart Traffic Navigation</h2>
+
+<p>Click map to select Start and Destination</p>
+
+<button onclick="findRoute()">Find Route</button>
+
+<div id="map"></div>
+
+<script>
+
+var map = L.map('map').setView([13.0827,80.2707],13);
+
+L.tileLayer(
+'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+{
+maxZoom:19
+}
+).addTo(map);
+
+
+var startMarker = null
+var endMarker = null
+var routeLine = null
+
+map.on('click',function(e){
+
+if(startMarker == null){
+
+startMarker = L.marker(e.latlng).addTo(map)
+
+}else if(endMarker == null){
+
+endMarker = L.marker(e.latlng).addTo(map)
+
+}else{
+
+map.removeLayer(startMarker)
+map.removeLayer(endMarker)
+
+if(routeLine){
+map.removeLayer(routeLine)
+}
+
+startMarker = L.marker(e.latlng).addTo(map)
+endMarker = null
+
+}
+
+})
+
+
+function findRoute(){
+
+if(!startMarker || !endMarker){
+
+alert("Select start and destination")
+
+return
+
+}
+
+var s = startMarker.getLatLng()
+var e = endMarker.getLatLng()
+
+fetch(`http://127.0.0.1:8000/route?start_lat=${s.lat}&start_lon=${s.lng}&end_lat=${e.lat}&end_lon=${e.lng}`)
+.then(res => res.json())
+.then(data => {
+
+console.log("API response:", data)
+
+if(!data.route){
+alert("Route not found")
+return
+}
+
+if(routeLine){
+map.removeLayer(routeLine)
+}
+
+routeLine = L.polyline(data.route,{
+color:"blue",
+weight:6
+}).addTo(map)
+
+map.fitBounds(routeLine.getBounds())
+
+})
+
+}
+
+</script>
+
+</body>
+
+</html>
