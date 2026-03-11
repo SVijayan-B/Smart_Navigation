@@ -121,9 +121,48 @@ map.fitBounds(routeLine.getBounds())
 })
 
 }
+var trafficLines = []
+
+function loadTraffic(){
+
+fetch("http://127.0.0.1:8000/traffic")
+
+.then(res => res.json())
+
+.then(data => {
+
+trafficLines.forEach(l => map.removeLayer(l))
+trafficLines = []
+
+data.roads.forEach(r => {
+
+var color="green"
+
+if(r.traffic > 0.7){
+color="red"
+}
+else if(r.traffic > 0.3){
+color="yellow"
+}
+
+var line = L.polyline(
+r.coords,
+{
+color:color,
+weight:4
+}
+).addTo(map)
+
+trafficLines.push(line)
+
+})
+
+})
+
+}
 
 </script>
-
+setInterval(loadTraffic,2000)
 </body>
 
 </html>

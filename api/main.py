@@ -39,3 +39,31 @@ def route(start_lat: float, start_lon: float, end_lat: float, end_lon: float):
         route_coords.append([lat, lon])
 
     return {"route": route_coords}
+
+from traffic.traffic_store import traffic_db
+
+
+@app.get("/traffic")
+def traffic():
+
+    roads = []
+
+    for road, value in traffic_db.items():
+
+        start, end = road.split("-")
+
+        start = int(start)
+        end = int(end)
+
+        lat1 = graph.nodes[start]['y']
+        lon1 = graph.nodes[start]['x']
+
+        lat2 = graph.nodes[end]['y']
+        lon2 = graph.nodes[end]['x']
+
+        roads.append({
+            "coords":[[lat1,lon1],[lat2,lon2]],
+            "traffic":value
+        })
+
+    return {"roads":roads}
