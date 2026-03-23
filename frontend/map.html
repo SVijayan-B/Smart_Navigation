@@ -1,168 +1,332 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Traffic Demo - Chennai</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+  <style>
+    :root {
+      --bg: #eef5ef;
+      --text: #0f2615;
+      --panel: rgba(255, 255, 255, 0.95);
+      --accent: #0a7f5a;
+    }
 
-<title>Smart Navigation</title>
+    * { box-sizing: border-box; }
 
-<link rel="stylesheet"
-href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(180deg, #e4f2e9 0%, var(--bg) 100%);
+      color: var(--text);
+    }
 
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 14px;
+      background: var(--panel);
+      border-bottom: 1px solid #d4e7d9;
+    }
 
-<style>
+    .title { font-size: 18px; font-weight: 700; }
+    .sub { font-size: 13px; opacity: 0.85; }
 
-body{
-font-family:Arial;
-}
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+    }
 
-#map{
-height:600px;
-margin-top:10px;
-}
+    .btn {
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+    }
 
-button{
-padding:10px;
-font-size:16px;
-}
+    #map {
+      width: 100%;
+      height: calc(100vh - 74px);
+    }
 
-</style>
+    .legend {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #d2dfd8;
+      border-radius: 8px;
+      padding: 8px 10px;
+      line-height: 1.5;
+      font-size: 12px;
+      min-width: 160px;
+    }
 
+    .swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 6px;
+    }
+
+    .veh-icon {
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform-origin: 50% 50%;
+    }
+
+    .veh-arrow {
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-bottom: 14px solid #0ea5e9;
+      filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.45));
+    }
+  </style>
 </head>
-
 <body>
+  <div class="topbar">
+    <div>
+      <div class="title">Real-Time Smart Traffic Demo Platform</div>
+      <div class="sub" id="status">Click map: first click start, second click destination.</div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="resetBtn" type="button">Reset Route</button>
+    </div>
+  </div>
+  <div id="map"></div>
 
-<h2>Smart Traffic Navigation</h2>
+  <script>
+    const API_BASE = "http://127.0.0.1:8000";
+    const WS_BASE = "ws://127.0.0.1:8000/ws/live";
 
-<p>Click map to select Start and Destination</p>
+    const map = L.map("map").setView([13.0827, 80.2707], 12);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
 
-<button onclick="findRoute()">Find Route</button>
+    const trafficEdgeLayer = L.layerGroup().addTo(map);
+    let heatLayer = L.heatLayer([], {
+      radius: 20,
+      blur: 14,
+      maxZoom: 17,
+      gradient: { 0.2: "#22c55e", 0.5: "#eab308", 0.8: "#f97316", 1.0: "#dc2626" }
+    }).addTo(map);
 
-<div id="map"></div>
+    let vehicleStates = new Map();
+    let startMarker = null;
+    let endMarker = null;
+    let routeLine = null;
 
-<script>
+    const statusEl = document.getElementById("status");
 
-var map = L.map('map').setView([13.0827,80.2707],13);
+    function setStatus(text) { statusEl.textContent = text; }
 
-L.tileLayer(
-'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-{
-maxZoom:19
-}
-).addTo(map);
+    function scoreToColor(score) {
+      if (score >= 0.8) return "#16a34a";
+      if (score >= 0.5) return "#eab308";
+      if (score >= 0.2) return "#f97316";
+      return "#dc2626";
+    }
 
+    function headingDeg(from, to) {
+      const dLon = to.lng - from.lng;
+      const dLat = to.lat - from.lat;
+      const angle = (Math.atan2(dLon, dLat) * 180) / Math.PI;
+      return (angle + 360) % 360;
+    }
 
-var startMarker = null
-var endMarker = null
-var routeLine = null
+    function createVehicleIcon(heading) {
+      return L.divIcon({
+        className: "veh-icon",
+        html: `<div class="veh-arrow" style="transform: rotate(${heading}deg);"></div>`,
+        iconSize: [18, 18],
+        iconAnchor: [9, 9]
+      });
+    }
 
-map.on('click',function(e){
+    function updateTrafficLayers(roads) {
+      trafficEdgeLayer.clearLayers();
+      const heatPoints = [];
 
-if(startMarker == null){
+      (roads || []).forEach((road) => {
+        const color = scoreToColor(road.traffic);
+        L.polyline(road.coords, { color, weight: 3, opacity: 0.75 }).addTo(trafficEdgeLayer);
 
-startMarker = L.marker(e.latlng).addTo(map)
+        const midLat = (road.coords[0][0] + road.coords[1][0]) / 2;
+        const midLon = (road.coords[0][1] + road.coords[1][1]) / 2;
+        heatPoints.push([midLat, midLon, 1.0 - road.traffic]);
+      });
 
-}else if(endMarker == null){
+      map.removeLayer(heatLayer);
+      heatLayer = L.heatLayer(heatPoints, {
+        radius: 20,
+        blur: 14,
+        maxZoom: 17,
+        gradient: { 0.2: "#22c55e", 0.5: "#eab308", 0.8: "#f97316", 1.0: "#dc2626" }
+      }).addTo(map);
+    }
 
-endMarker = L.marker(e.latlng).addTo(map)
+    function updateVehicles(vehicles) {
+      const now = performance.now();
+      const seen = new Set();
 
-}else{
+      (vehicles || []).forEach((vehicle) => {
+        const id = vehicle.vehicle_id;
+        const target = L.latLng(vehicle.latitude, vehicle.longitude);
+        seen.add(id);
 
-map.removeLayer(startMarker)
-map.removeLayer(endMarker)
+        if (!vehicleStates.has(id)) {
+          const marker = L.marker(target, { icon: createVehicleIcon(0) }).addTo(map);
+          marker.bindTooltip(id, { direction: "top" });
+          vehicleStates.set(id, {
+            marker,
+            current: target,
+            start: target,
+            target,
+            startTs: now,
+            duration: 900,
+            heading: 0
+          });
+          return;
+        }
 
-if(routeLine){
-map.removeLayer(routeLine)
-}
+        const state = vehicleStates.get(id);
+        const h = headingDeg(state.current, target);
+        state.start = state.current;
+        state.target = target;
+        state.startTs = now;
+        state.duration = 900;
+        state.heading = h;
+        state.marker.setIcon(createVehicleIcon(h));
+      });
 
-startMarker = L.marker(e.latlng).addTo(map)
-endMarker = null
+      Array.from(vehicleStates.keys()).forEach((id) => {
+        if (!seen.has(id)) {
+          map.removeLayer(vehicleStates.get(id).marker);
+          vehicleStates.delete(id);
+        }
+      });
+    }
 
-}
+    function animateVehicles(ts) {
+      vehicleStates.forEach((state) => {
+        const t = Math.min((ts - state.startTs) / state.duration, 1);
+        const lat = state.start.lat + (state.target.lat - state.start.lat) * t;
+        const lng = state.start.lng + (state.target.lng - state.start.lng) * t;
+        state.current = L.latLng(lat, lng);
+        state.marker.setLatLng(state.current);
+      });
+      requestAnimationFrame(animateVehicles);
+    }
 
-})
+    function clearRoute() {
+      if (routeLine) {
+        map.removeLayer(routeLine);
+        routeLine = null;
+      }
+    }
 
+    function resetRoute() {
+      if (startMarker) map.removeLayer(startMarker);
+      if (endMarker) map.removeLayer(endMarker);
+      startMarker = null;
+      endMarker = null;
+      clearRoute();
+      setStatus("Click map: first click start, second click destination.");
+    }
 
-function findRoute(){
+    async function fetchRoute() {
+      if (!startMarker || !endMarker) return;
+      const s = startMarker.getLatLng();
+      const e = endMarker.getLatLng();
+      const url = `${API_BASE}/route?start_lat=${s.lat}&start_lon=${s.lng}&end_lat=${e.lat}&end_lon=${e.lng}`;
 
-if(!startMarker || !endMarker){
+      try {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.route || data.route.length < 2) return;
 
-alert("Select start and destination")
+        clearRoute();
+        routeLine = L.polyline(data.route, { color: "#2563eb", weight: 6, opacity: 0.9 }).addTo(map);
+      } catch (error) {
+        setStatus(`Route fetch failed: ${error}`);
+      }
+    }
 
-return
+    function connectLiveStream() {
+      const ws = new WebSocket(WS_BASE);
 
-}
+      ws.onopen = () => setStatus("Live stream connected. Select start and destination.");
+      ws.onclose = () => {
+        setStatus("Live stream disconnected. Reconnecting...");
+        setTimeout(connectLiveStream, 1500);
+      };
+      ws.onerror = () => ws.close();
 
-var s = startMarker.getLatLng()
-var e = endMarker.getLatLng()
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          updateTrafficLayers(payload.traffic || []);
+          updateVehicles(payload.vehicles || []);
+        } catch (_) {
+          // ignore malformed frame
+        }
+      };
+    }
 
-fetch(`http://127.0.0.1:8000/route?start_lat=${s.lat}&start_lon=${s.lng}&end_lat=${e.lat}&end_lon=${e.lng}`)
-.then(res => res.json())
-.then(data => {
+    map.on("click", async (event) => {
+      if (!startMarker) {
+        startMarker = L.marker(event.latlng).addTo(map).bindPopup("Start").openPopup();
+        setStatus("Start selected. Click destination.");
+        return;
+      }
 
-console.log("API response:", data)
+      if (!endMarker) {
+        endMarker = L.marker(event.latlng).addTo(map).bindPopup("Destination").openPopup();
+        setStatus("Destination selected. Computing optimal route...");
+        await fetchRoute();
+        return;
+      }
 
-if(!data.route){
-alert("Route not found")
-return
-}
+      resetRoute();
+      startMarker = L.marker(event.latlng).addTo(map).bindPopup("Start").openPopup();
+      setStatus("Start reset. Click destination.");
+    });
 
-if(routeLine){
-map.removeLayer(routeLine)
-}
+    document.getElementById("resetBtn").addEventListener("click", resetRoute);
 
-routeLine = L.polyline(data.route,{
-color:"blue",
-weight:6
-}).addTo(map)
+    const legend = L.control({ position: "bottomright" });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create("div", "legend");
+      div.innerHTML = `
+        <div><strong>Traffic Score</strong></div>
+        <div><span class="swatch" style="background:#16a34a"></span>0.8 - 1.0 (Low)</div>
+        <div><span class="swatch" style="background:#eab308"></span>0.5 - 0.8 (Medium)</div>
+        <div><span class="swatch" style="background:#f97316"></span>0.2 - 0.5 (High)</div>
+        <div><span class="swatch" style="background:#dc2626"></span>0.0 - 0.2 (Severe)</div>
+      `;
+      return div;
+    };
+    legend.addTo(map);
 
-map.fitBounds(routeLine.getBounds())
-
-})
-
-}
-var trafficLines = []
-
-function loadTraffic(){
-
-fetch("http://127.0.0.1:8000/traffic")
-
-.then(res => res.json())
-
-.then(data => {
-
-trafficLines.forEach(l => map.removeLayer(l))
-trafficLines = []
-
-data.roads.forEach(r => {
-
-var color="green"
-
-if(r.traffic > 0.7){
-color="red"
-}
-else if(r.traffic > 0.3){
-color="yellow"
-}
-
-var line = L.polyline(
-r.coords,
-{
-color:color,
-weight:4
-}
-).addTo(map)
-
-trafficLines.push(line)
-
-})
-
-})
-
-}
-
-</script>
-setInterval(loadTraffic,2000)
+    connectLiveStream();
+    setInterval(fetchRoute, 5000);
+    requestAnimationFrame(animateVehicles);
+  </script>
 </body>
-
 </html>
